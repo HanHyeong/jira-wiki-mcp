@@ -1,0 +1,10 @@
+.env
+.env.local
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# 로컬에서 뽑은 지라 전체 덤프·첨부 테스트 (민감/용량)
+issue.json
+_attachments_test/

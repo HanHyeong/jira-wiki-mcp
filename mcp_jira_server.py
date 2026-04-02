@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""
+Jira MCP 서버 (stdio / JSON-RPC). Cursor·Claude Desktop 등 MCP 클라이언트에서 사용.
+
+설정: 스크립트와 같은 디렉터리의 .env 또는 환경 변수
+  JIRA_BASE_URL, JIRA_USER, JIRA_PASSWORD
+
+Cursor 예시 (mcp.json):
+  "jira": {
+    "command": "/절대경로/jira-wiki/.venv/bin/python",
+    "args": ["/절대경로/jira-wiki/mcp_jira_server.py"]
+  }
+
+stdout에는 JSON-RPC만 출력합니다 (디버그는 stderr).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from typing import Any
+
+import requests
+
+import jira_search as js
+
+PROTOCOL_VERSION = "2024-11-05"
+SERVER_NAME = "jira-wiki"
+SERVER_VERSION = "1.0.0"
+
+
+def _bootstrap_env() -> None:
+    root = os.path.dirname(os.path.abspath(__file__))
+    js.load_env_file(os.path.join(root, ".env"))
+    js.load_env_file(os.path.join(os.getcwd(), ".env"))
+
+
+def _send(obj: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _read_request() -> dict[str, Any] | None:
+    fin = sys.stdin.buffer
+    line = fin.readline()
+    if not line:
+        return None
+    if line.lower().startswith(b"content-length:"):
+        try:
+            length = int(line.decode("ascii", errors="ignore").split(":", 1)[1].strip())
+        except (ValueError, IndexError):
+            return None
+        while True:
+            sep = fin.readline()
+            if sep in (b"\r\n", b"\n", b""):
+                break
+        body = fin.read(length)
+        if not body:
+            return None
+        return json.loads(body.decode("utf-8"))
+    line = line.strip()
+    if not line:
+        return _read_request()
+    return json.loads(line.decode("utf-8"))
+
+
+def _tool_text(text: str, is_error: bool = False) -> dict[str, Any]:
+    return {
+        "content": [{"type": "text", "text": text}],
+        "isError": is_error,
+    }
+
+
+def _parse_fields(s: str | None) -> list[str] | None:
+    if not s or not str(s).strip():
+        return None
+    return [x.strip() for x in str(s).split(",") if x.strip()]
+
+
+TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "jira_search",
+        "description": "JQL로 이슈 검색. Jira REST /search 응답(JSON)을 문자열로 반환.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "jql": {
+                    "type": "string",
+                    "description": "JQL 쿼리",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "최대 결과 수",
+                },
+                "start_at": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "페이지 시작 offset",
+                },
+                "fields": {
+                    "type": "string",
+                    "description": "콤마로 구분한 필드 (비우면 Jira 기본)",
+                },
+            },
+            "required": ["jql"],
+        },
+    },
+    {
+        "name": "jira_search_users",
+        "description": "사용자 아이디·이름 일부로 검색(웹 UI 사용자 필드 자동완성과 유사). JSON 배열 문자열 반환.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "검색어(로그인 id 또는 표시 이름 일부)",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "최대 인원",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "jira_get_issue",
+        "description": "이슈 키로 상세 조회. 본문·첨부 메타·변경 이력·댓글 포함 텍스트 또는 JSON.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string", "description": "예: PROJ-123"},
+                "output_format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "default": "text",
+                    "description": "text=읽기 쉬운 요약, json=issue+comments 원본",
+                },
+                "include_comments": {
+                    "type": "boolean",
+                    "default": True,
+                },
+            },
+            "required": ["issue_key"],
+        },
+    },
+    {
+        "name": "jira_download_attachments",
+        "description": "이슈 첨부를 dest_dir에 Basic 인증으로 다운로드. 저장된 절대 경로 목록을 반환.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string"},
+                "dest_dir": {
+                    "type": "string",
+                    "description": "저장 폴더 (절대 경로 권장)",
+                },
+            },
+            "required": ["issue_key", "dest_dir"],
+        },
+    },
+]
+
+
+def _call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    arguments = arguments or {}
+    cfg = js.try_get_config()
+    if cfg is None:
+        return _tool_text(
+            "JIRA_BASE_URL, JIRA_USER, JIRA_PASSWORD 가 설정되지 않았습니다. "
+            "mcp_jira_server.py 와 같은 폴더의 .env 또는 MCP env 에 넣어 주세요.",
+            is_error=True,
+        )
+    base, user, password = cfg
+
+    try:
+        if name == "jira_search":
+            jql = arguments.get("jql")
+            if not jql:
+                return _tool_text("jql 이 필요합니다.", is_error=True)
+            data = js.search_issues(
+                base,
+                user,
+                password,
+                str(jql),
+                int(arguments.get("max_results") or 20),
+                int(arguments.get("start_at") or 0),
+                _parse_fields(arguments.get("fields")),
+            )
+            return _tool_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+        if name == "jira_search_users":
+            q = str(arguments.get("query") or "").strip()
+            if not q:
+                return _tool_text("query 가 필요합니다.", is_error=True)
+            ulist = js.search_users(
+                base,
+                user,
+                password,
+                q,
+                int(arguments.get("max_results") or 20),
+            )
+            return _tool_text(json.dumps(ulist, ensure_ascii=False, indent=2))
+
+        if name == "jira_get_issue":
+            key = arguments.get("issue_key")
+            if not key:
+                return _tool_text("issue_key 가 필요합니다.", is_error=True)
+            key = str(key).strip()
+            issue = js.get_issue(base, user, password, key)
+            inc = arguments.get("include_comments", True)
+            comments: list[dict[str, Any]] = []
+            if inc:
+                comments = js.get_issue_comments(base, user, password, key)
+            fmt = (arguments.get("output_format") or "text").lower()
+            if fmt == "json":
+                return _tool_text(
+                    json.dumps(
+                        {"issue": issue, "comments": comments},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            return _tool_text(js.format_issue_detail(issue, comments))
+
+        if name == "jira_download_attachments":
+            key = str(arguments.get("issue_key") or "").strip()
+            dest = str(arguments.get("dest_dir") or "").strip()
+            if not key or not dest:
+                return _tool_text("issue_key 와 dest_dir 가 필요합니다.", is_error=True)
+            issue = js.get_issue(base, user, password, key)
+            paths = js.save_issue_attachments(
+                user, password, issue.get("fields") or {}, dest
+            )
+            if not paths:
+                return _tool_text("첨부가 없거나 다운로드할 URL이 없습니다.")
+            return _tool_text(
+                "다운로드 완료:\n" + "\n".join(paths),
+                is_error=False,
+            )
+
+        return _tool_text(f"알 수 없는 도구: {name}", is_error=True)
+    except requests.HTTPError as e:
+        body = ""
+        if e.response is not None:
+            try:
+                body = e.response.text[:4000]
+            except Exception:
+                body = str(e.response)
+        return _tool_text(f"HTTP 오류: {e}\n{body}", is_error=True)
+    except requests.RequestException as e:
+        return _tool_text(f"요청 실패: {e}", is_error=True)
+    except OSError as e:
+        return _tool_text(f"파일/경로 오류: {e}", is_error=True)
+    except Exception as e:
+        return _tool_text(f"오류: {e!r}", is_error=True)
+
+
+def _handle(req: dict[str, Any]) -> None:
+    method = req.get("method")
+    params = req.get("params") or {}
+
+    if method is None:
+        return
+
+    # JSON-RPC Notification: id 없음(또는 null) → 응답 없음
+    if "id" not in req or req.get("id") is None:
+        return
+
+    rid = req["id"]
+
+    if method == "initialize":
+        _send(
+            {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                },
+            }
+        )
+        return
+
+    if method == "tools/list":
+        _send(
+            {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {"tools": TOOLS},
+            }
+        )
+        return
+
+    if method == "tools/call":
+        name = (params.get("name") or "").strip()
+        args = params.get("arguments")
+        if not isinstance(args, dict):
+            args = {}
+        result = _call_tool(name, args)
+        _send({"jsonrpc": "2.0", "id": rid, "result": result})
+        return
+
+    if method == "ping":
+        _send({"jsonrpc": "2.0", "id": rid, "result": {}})
+        return
+
+    if method == "resources/list":
+        _send({"jsonrpc": "2.0", "id": rid, "result": {"resources": []}})
+        return
+
+    if method == "prompts/list":
+        _send({"jsonrpc": "2.0", "id": rid, "result": {"prompts": []}})
+        return
+
+    _send(
+        {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }
+    )
+
+
+def main() -> None:
+    _bootstrap_env()
+    while True:
+        try:
+            req = _read_request()
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"MCP: 잘못된 JSON: {e}", file=sys.stderr)
+            continue
+        if req is None:
+            break
+        if not isinstance(req, dict):
+            continue
+        try:
+            _handle(req)
+        except BrokenPipeError:
+            break
+
+
+if __name__ == "__main__":
+    main()

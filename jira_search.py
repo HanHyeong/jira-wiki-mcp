@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+"""
+Jira 이슈 검색 CLI (웹 UI 없이 REST API 사용).
+
+환경 변수:
+  JIRA_BASE_URL  예: http://jira.example.com:8080
+  JIRA_USER      로그인 아이디
+  JIRA_PASSWORD  비밀번호 (또는 PAT가 있다면 그 값)
+
+선택: .env 파일을 쓰려면 `pip install python-dotenv` 후 스크립트에 load_dotenv() 추가.
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import re
+import sys
+from typing import Any
+from urllib.parse import quote
+
+import requests
+
+
+def load_env_file(path: str = ".env") -> None:
+    """간단한 KEY=VALUE .env 로더 (외부 의존 없음)."""
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
+def try_get_config() -> tuple[str, str, str] | None:
+    base = os.environ.get("JIRA_BASE_URL", "").rstrip("/")
+    user = os.environ.get("JIRA_USER", "")
+    password = os.environ.get("JIRA_PASSWORD", "")
+    if not base or not user or not password:
+        return None
+    return base, user, password
+
+
+def get_config() -> tuple[str, str, str]:
+    c = try_get_config()
+    if c is None:
+        print(
+            "JIRA_BASE_URL, JIRA_USER, JIRA_PASSWORD 환경 변수를 설정하세요.\n"
+            "예: export JIRA_BASE_URL=http://jira.example.com:8080\n"
+            "    export JIRA_USER=...\n"
+            "    export JIRA_PASSWORD=...\n"
+            "또는 프로젝트 루트에 .env 파일을 두어도 됩니다.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return c
+
+
+def search_issues(
+    base_url: str,
+    user: str,
+    password: str,
+    jql: str,
+    max_results: int,
+    start_at: int,
+    fields: list[str] | None,
+) -> dict[str, Any]:
+    url = f"{base_url}/rest/api/2/search"
+    payload: dict[str, Any] = {
+        "jql": jql,
+        "maxResults": max_results,
+        "startAt": start_at,
+    }
+    if fields:
+        payload["fields"] = fields
+    r = requests.post(
+        url,
+        json=payload,
+        auth=(user, password),
+        headers={"Content-Type": "application/json"},
+        timeout=60,
+    )
+    if r.status_code == 404:
+        # 일부 서버는 api/3만 노출
+        url3 = f"{base_url}/rest/api/3/search"
+        r = requests.post(
+            url3,
+            json=payload,
+            auth=(user, password),
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+    r.raise_for_status()
+    return r.json()
+
+
+def _normalize_picker_user_entries(items: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        u = item.get("user") if isinstance(item.get("user"), dict) else item
+        if not isinstance(u, dict):
+            continue
+        if u.get("name") or u.get("key") or u.get("displayName") or u.get("accountId"):
+            out.append(u)
+    return out
+
+
+def _users_from_picker_payload(data: Any) -> list[dict[str, Any]] | None:
+    if isinstance(data, list):
+        return _normalize_picker_user_entries(data)
+    if not isinstance(data, dict):
+        return None
+    for key in ("users", "suggestions", "values", "items"):
+        arr = data.get(key)
+        if isinstance(arr, list):
+            return _normalize_picker_user_entries(arr)
+    return None
+
+
+def search_users(
+    base_url: str,
+    user: str,
+    password: str,
+    query: str,
+    max_results: int = 20,
+) -> list[dict[str, Any]]:
+    """
+    지라 웹의 사용자 필드 자동완성과 비슷한 검색.
+    GET /rest/api/2/user/picker 를 우선 사용하고, 실패 시 user/search 등으로 폴백.
+    """
+    q = quote(query.strip(), safe="")
+    n = max(1, min(int(max_results), 1000))
+    auth = (user, password)
+    headers = {"Accept": "application/json"}
+    last_err: requests.HTTPError | None = None
+
+    url_picker = f"{base_url}/rest/api/2/user/picker?query={q}&maxResults={n}"
+    try:
+        r = requests.get(url_picker, auth=auth, headers=headers, timeout=60)
+        if r.ok:
+            parsed = _users_from_picker_payload(r.json())
+            if parsed is not None and len(parsed) > 0:
+                return parsed[:n]
+        elif r.status_code not in (400, 404, 405):
+            r.raise_for_status()
+    except requests.HTTPError as e:
+        last_err = e
+
+    for param in ("username", "query"):
+        url = f"{base_url}/rest/api/2/user/search?{param}={q}&maxResults={n}"
+        try:
+            r = requests.get(url, auth=auth, headers=headers, timeout=60)
+            if r.ok:
+                data = r.json()
+                if isinstance(data, list):
+                    return data[:n]
+            elif r.status_code not in (400, 404):
+                r.raise_for_status()
+        except requests.HTTPError as e:
+            last_err = e
+
+    url3 = f"{base_url}/rest/api/3/user/search?query={q}&maxResults={n}"
+    r3 = requests.get(url3, auth=auth, headers=headers, timeout=60)
+    try:
+        r3.raise_for_status()
+    except requests.HTTPError as e:
+        if last_err:
+            raise last_err from e
+        raise
+    data3 = r3.json()
+    if isinstance(data3, list):
+        return data3[:n]
+    if isinstance(data3, dict):
+        arr = data3.get("users") or data3.get("values")
+        if isinstance(arr, list):
+            return arr[:n]
+    return []
+
+
+def format_users_list(users: list[dict[str, Any]]) -> str:
+    if not users:
+        return "일치하는 사용자가 없습니다."
+    lines: list[str] = [f"사용자 {len(users)}명\n"]
+    for u in users:
+        name = u.get("name") or u.get("key") or ""
+        dn = u.get("displayName") or ""
+        email = u.get("emailAddress") or ""
+        active = u.get("active")
+        extra = f"  ({email})" if email else ""
+        act = "" if active is None else (" [활성]" if active else " [비활성]")
+        lines.append(f"· {name}\t{dn}{extra}{act}")
+    return "\n".join(lines)
+
+
+def get_issue(
+    base_url: str,
+    user: str,
+    password: str,
+    issue_key: str,
+) -> dict[str, Any]:
+    q = "expand=renderedFields,names,changelog"
+    url = f"{base_url}/rest/api/2/issue/{quote(issue_key, safe='')}?{q}"
+    r = requests.get(
+        url,
+        auth=(user, password),
+        headers={"Accept": "application/json"},
+        timeout=60,
+    )
+    if r.status_code == 404:
+        url3 = f"{base_url}/rest/api/3/issue/{quote(issue_key, safe='')}?expand=renderedFields,names,changelog"
+        r = requests.get(
+            url3,
+            auth=(user, password),
+            headers={"Accept": "application/json"},
+            timeout=60,
+        )
+    r.raise_for_status()
+    return r.json()
+
+
+def _fetch_comment_page_v2(
+    base_url: str,
+    user: str,
+    password: str,
+    key_q: str,
+    start: int,
+    page_size: int,
+) -> dict[str, Any]:
+    variants = [
+        f"?startAt={start}&maxResults={page_size}&expand=renderedBody&orderBy=created",
+        f"?startAt={start}&maxResults={page_size}&expand=renderedBody",
+        f"?startAt={start}&maxResults={page_size}",
+    ]
+    last_exc: requests.HTTPError | None = None
+    for qs in variants:
+        url = f"{base_url}/rest/api/2/issue/{key_q}/comment{qs}"
+        r = requests.get(
+            url,
+            auth=(user, password),
+            headers={"Accept": "application/json"},
+            timeout=60,
+        )
+        if r.status_code == 404:
+            break
+        if r.status_code == 400:
+            continue
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            last_exc = e
+            continue
+        return r.json()
+    if last_exc:
+        raise last_exc
+    url3 = f"{base_url}/rest/api/3/issue/{key_q}/comment?startAt={start}&maxResults={page_size}"
+    r = requests.get(
+        url3,
+        auth=(user, password),
+        headers={"Accept": "application/json"},
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def get_issue_comments(
+    base_url: str,
+    user: str,
+    password: str,
+    issue_key: str,
+    max_total: int = 500,
+    page_size: int = 50,
+) -> list[dict[str, Any]]:
+    key_q = quote(issue_key, safe="")
+    collected: list[dict[str, Any]] = []
+    start = 0
+    while len(collected) < max_total:
+        data = _fetch_comment_page_v2(
+            base_url, user, password, key_q, start, page_size
+        )
+        chunk = data.get("comments") or []
+        collected.extend(chunk)
+        total = data.get("total")
+        if total is None:
+            total = len(collected) if not chunk else start + len(chunk)
+        else:
+            total = int(total)
+        if not chunk or start + len(chunk) >= total:
+            break
+        start += len(chunk)
+    try:
+        collected.sort(key=lambda c: (c.get("created") or ""))
+    except Exception:
+        pass
+    return collected[:max_total]
+
+
+def _adf_to_plain(node: Any) -> str:
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, dict):
+        if node.get("type") == "text" and "text" in node:
+            return str(node["text"])
+        inner = node.get("content")
+        if isinstance(inner, list):
+            return "".join(_adf_to_plain(x) for x in inner)
+        return ""
+    if isinstance(node, list):
+        return "".join(_adf_to_plain(x) for x in node)
+    return ""
+
+
+def _comment_body_text(c: dict[str, Any]) -> str:
+    rb = c.get("renderedBody")
+    if isinstance(rb, str) and rb.strip():
+        return _strip_html(rb)
+    body = c.get("body")
+    if isinstance(body, str) and body.strip():
+        return body.strip()
+    if isinstance(body, dict):
+        t = _adf_to_plain(body).strip()
+        return t if t else "(구조화 본문 — --json 으로 확인)"
+    return "(없음)"
+
+
+def format_attachments_block(fields: dict[str, Any]) -> str:
+    att = fields.get("attachment")
+    if not isinstance(att, list) or not att:
+        return ""
+    lines: list[str] = ["── 첨부파일 ──"]
+    for a in att:
+        if not isinstance(a, dict):
+            continue
+        fn = a.get("filename") or "?"
+        aid = a.get("id", "")
+        sz = a.get("size")
+        mt = a.get("mimeType") or ""
+        url = a.get("content") or ""
+        who = _person_name(a.get("author"))
+        when = a.get("created") or ""
+        lines.append(f"· [{aid}] {fn}")
+        lines.append(f"  크기: {sz} bytes  타입: {mt}  업로드: {when}  {who}")
+        if url:
+            lines.append(f"  content URL: {url}")
+    lines.append(
+        "  ※ URL은 지라 로그인(세션) 또는 API와 동일한 Basic 인증이 있어야 열립니다."
+        " 로컬 저장: --save-attachments 디렉터리"
+    )
+    return "\n".join(lines)
+
+
+def _safe_attachment_filename(name: str) -> str:
+    name = (name or "file").replace("\x00", "")
+    for c in '<>:"/\\|?*\n\r\t':
+        name = name.replace(c, "_")
+    name = name.strip(" .")
+    return name or "file"
+
+
+def save_issue_attachments(
+    user: str,
+    password: str,
+    fields: dict[str, Any],
+    dest_dir: str,
+) -> list[str]:
+    att = fields.get("attachment")
+    if not isinstance(att, list) or not att:
+        return []
+    os.makedirs(dest_dir, exist_ok=True)
+    saved: list[str] = []
+    for a in att:
+        if not isinstance(a, dict):
+            continue
+        url = a.get("content")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        aid = str(a.get("id") or "x")
+        base = _safe_attachment_filename(str(a.get("filename") or f"attachment_{aid}"))
+        path = os.path.join(dest_dir, f"{aid}_{base}")
+        n = 0
+        while os.path.exists(path):
+            n += 1
+            root, ext = os.path.splitext(base)
+            path = os.path.join(dest_dir, f"{aid}_{root}_{n}{ext}")
+        r = requests.get(
+            url,
+            auth=(user, password),
+            stream=True,
+            timeout=120,
+        )
+        r.raise_for_status()
+        with open(path, "wb") as out:
+            for chunk in r.iter_content(chunk_size=256 * 1024):
+                if chunk:
+                    out.write(chunk)
+        saved.append(path)
+    return saved
+
+
+def format_changelog(issue: dict[str, Any]) -> str:
+    ch = issue.get("changelog")
+    if not isinstance(ch, dict):
+        return ""
+    histories = ch.get("histories") or []
+    if not isinstance(histories, list) or not histories:
+        return ""
+    lines = ["", "── 변경 이력 ──"]
+    for h in histories:
+        if not isinstance(h, dict):
+            continue
+        who = _person_name(h.get("author"))
+        when = h.get("created") or ""
+        lines.append(f"[{when}] {who or '(시스템)'}")
+        items = h.get("items") or []
+        if not isinstance(items, list):
+            continue
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            field = it.get("field") or it.get("fieldId") or "?"
+            frm = it.get("fromString")
+            to = it.get("toString")
+            if frm is None and to is None:
+                continue
+            lines.append(f"  · {field}: {frm!r} → {to!r}")
+    return "\n".join(lines)
+
+
+def format_comments_block(comments: list[dict[str, Any]]) -> str:
+    if not comments:
+        return "\n\n── 댓글 ──\n(없음)"
+    lines = ["", "── 댓글 ──"]
+    for i, c in enumerate(comments, 1):
+        if not isinstance(c, dict):
+            continue
+        who = _person_name(c.get("author"))
+        when = c.get("created") or ""
+        lines.append(f"--- #{i} [{when}] {who} ---")
+        lines.append(_comment_body_text(c))
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _person_name(p: Any) -> str:
+    if not isinstance(p, dict):
+        return ""
+    return (p.get("displayName") or p.get("name") or "").strip()
+
+
+def _strip_html(s: str) -> str:
+    t = re.sub(r"<[^>]+>", " ", s)
+    t = html.unescape(t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def format_issue_detail(
+    issue: dict[str, Any],
+    comments: list[dict[str, Any]] | None = None,
+) -> str:
+    key = issue.get("key", "?")
+    f = issue.get("fields") or {}
+    lines: list[str] = [
+        f"이슈: {key}",
+        f"요약: {f.get('summary') or ''}",
+    ]
+    it = f.get("issuetype")
+    if isinstance(it, dict) and it.get("name"):
+        lines.append(f"유형: {it['name']}")
+    st = f.get("status")
+    if isinstance(st, dict) and st.get("name"):
+        lines.append(f"상태: {st['name']}")
+    pr = f.get("priority")
+    if isinstance(pr, dict) and pr.get("name"):
+        lines.append(f"우선순위: {pr['name']}")
+    lines.append(f"담당: {_person_name(f.get('assignee')) or '(없음)'}")
+    lines.append(f"보고자: {_person_name(f.get('reporter')) or '(없음)'}")
+    if f.get("created"):
+        lines.append(f"생성: {f['created']}")
+    if f.get("updated"):
+        lines.append(f"수정: {f['updated']}")
+    res = f.get("resolution")
+    if isinstance(res, dict) and res.get("name"):
+        lines.append(f"해결: {res['name']}")
+    comps = f.get("components")
+    if isinstance(comps, list) and comps:
+        names = [c.get("name") for c in comps if isinstance(c, dict) and c.get("name")]
+        if names:
+            lines.append(f"구성요소: {', '.join(names)}")
+    labels = f.get("labels")
+    if isinstance(labels, list) and labels:
+        lines.append(f"라벨: {', '.join(str(x) for x in labels)}")
+
+    desc_plain = f.get("description")
+    desc_text = ""
+    if isinstance(desc_plain, str) and desc_plain.strip():
+        desc_text = desc_plain.strip()
+    rf = issue.get("renderedFields") or {}
+    if not desc_text and isinstance(rf.get("description"), str) and rf["description"].strip():
+        desc_text = _strip_html(rf["description"])
+    lines.append("")
+    lines.append("설명:")
+    lines.append(desc_text if desc_text else "(없음)")
+    att_txt = format_attachments_block(f)
+    if att_txt:
+        lines.append("")
+        lines.extend(att_txt.split("\n"))
+
+    text = "\n".join(lines)
+    text += format_changelog(issue)
+    text += format_comments_block(comments if comments is not None else [])
+    return text
+
+
+def format_issue(issue: dict[str, Any]) -> str:
+    key = issue.get("key", "?")
+    fields = issue.get("fields") or {}
+    summary = fields.get("summary") or ""
+    st = fields.get("status") or {}
+    status_name = st.get("name", "") if isinstance(st, dict) else ""
+    assignee = fields.get("assignee")
+    assignee_name = ""
+    if isinstance(assignee, dict):
+        assignee_name = assignee.get("displayName") or assignee.get("name") or ""
+    line = f"{key}\t{status_name}\t{assignee_name}\t{summary}"
+    return line
+
+
+def main() -> None:
+    load_env_file()
+
+    parser = argparse.ArgumentParser(description="Jira JQL 검색 / 이슈 상세 조회")
+    parser.add_argument(
+        "-i",
+        "--issue",
+        metavar="KEY",
+        help="이슈 키(예: PROJ-123) 상세 조회 — 지정 시 JQL 검색은 하지 않음",
+    )
+    parser.add_argument(
+        "-u",
+        "--users",
+        metavar="QUERY",
+        help="사용자 검색(웹 자동완성과 유사). 아이디·이름 일부 입력 — JQL 검색과 동시 사용 불가",
+    )
+    parser.add_argument(
+        "jql",
+        nargs="?",
+        default="assignee = currentUser() ORDER BY updated DESC",
+        help="JQL (기본: 내 담당 이슈 최근순)",
+    )
+    parser.add_argument("-n", "--max", type=int, default=20, help="최대 개수 (기본 20)")
+    parser.add_argument("-s", "--start", type=int, default=0, help="페이지 시작 offset")
+    parser.add_argument(
+        "-j",
+        "--json",
+        action="store_true",
+        help="응답을 JSON으로 출력 (검색: Jira search API 그대로, 상세: issue+comments)",
+    )
+    parser.add_argument(
+        "--fields",
+        type=str,
+        default="summary,status,assignee,updated",
+        help="콤마로 구분한 필드 목록",
+    )
+    parser.add_argument(
+        "--save-attachments",
+        metavar="DIR",
+        help="--issue 와 함께 사용: 첨부파일을 해당 폴더에 다운로드",
+    )
+    args = parser.parse_args()
+
+    if args.save_attachments and not args.issue:
+        print("--save-attachments 는 --issue 와 함께 써야 합니다.", file=sys.stderr)
+        sys.exit(2)
+    if args.users and args.issue:
+        print("--users 와 --issue 는 함께 쓸 수 없습니다.", file=sys.stderr)
+        sys.exit(2)
+
+    base, user, password = get_config()
+    field_list = [f.strip() for f in args.fields.split(",") if f.strip()]
+
+    if args.users is not None:
+        q = str(args.users).strip()
+        if not q:
+            print("사용자 검색어가 비어 있습니다.", file=sys.stderr)
+            sys.exit(2)
+        try:
+            ulist = search_users(base, user, password, q, args.max)
+        except requests.HTTPError as e:
+            body = ""
+            if e.response is not None:
+                try:
+                    body = e.response.text[:2000]
+                except Exception:
+                    body = str(e.response)
+            print(f"HTTP 오류: {e}\n{body}", file=sys.stderr)
+            sys.exit(1)
+        except requests.RequestException as e:
+            print(f"요청 실패: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            print(json.dumps(ulist, ensure_ascii=False, indent=2))
+        else:
+            print(format_users_list(ulist))
+        return
+
+    try:
+        if args.issue:
+            data = get_issue(base, user, password, args.issue.strip())
+        else:
+            data = search_issues(
+                base, user, password, args.jql, args.max, args.start, field_list
+            )
+    except requests.HTTPError as e:
+        body = ""
+        if e.response is not None:
+            try:
+                body = e.response.text[:2000]
+            except Exception:
+                body = str(e.response)
+        print(f"HTTP 오류: {e}\n{body}", file=sys.stderr)
+        sys.exit(1)
+    except requests.RequestException as e:
+        print(f"요청 실패: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.issue:
+        comments = get_issue_comments(base, user, password, args.issue.strip())
+        if args.save_attachments:
+            try:
+                saved = save_issue_attachments(
+                    user,
+                    password,
+                    data.get("fields") or {},
+                    args.save_attachments,
+                )
+            except requests.HTTPError as e:
+                print(f"첨부 다운로드 실패: {e}", file=sys.stderr)
+                sys.exit(1)
+            except OSError as e:
+                print(f"파일 저장 실패: {e}", file=sys.stderr)
+                sys.exit(1)
+            if saved:
+                print("첨부 저장:", file=sys.stderr)
+                for p in saved:
+                    print(f"  {p}", file=sys.stderr)
+            else:
+                print("저장할 첨부가 없습니다.", file=sys.stderr)
+        if args.json:
+            out = {"issue": data, "comments": comments}
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        else:
+            print(format_issue_detail(data, comments))
+        return
+
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    total = data.get("total", 0)
+    issues = data.get("issues") or []
+    print(f"총 {total}건 (표시 {len(issues)}건)\n")
+    for issue in issues:
+        print(format_issue(issue))
+
+
+if __name__ == "__main__":
+    main()
