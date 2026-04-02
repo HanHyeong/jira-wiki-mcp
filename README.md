@@ -19,7 +19,7 @@ cp .env.example .env
 .venv/bin/python wiki_search.py "메신저" -n 10
 ```
 
-MCP·Cursor·VS Code 연결, 지라·위키 도구 목록·환경 변수 설명은 [JIRA_WIKI_MCP_가이드.md](./JIRA_WIKI_MCP_가이드.md)를 참고하세요. 위키는 터미널에서 **`wiki_search.py`** 로도 검색할 수 있고, MCP 도구 **`wiki_search`** 로도 호출할 수 있습니다. 계정은 지라와 동일(`JIRA_USER` / `JIRA_PASSWORD`)입니다.
+MCP·Cursor·VS Code·**Claude Desktop** 연결, 지라·위키 도구 목록·환경 변수 설명은 [JIRA_WIKI_MCP_가이드.md](./JIRA_WIKI_MCP_가이드.md)를 참고하세요. 위키는 터미널에서 **`wiki_search.py`** 로도 검색할 수 있고, MCP 도구 **`wiki_search`** 로도 호출할 수 있습니다. 계정은 지라와 동일(`JIRA_USER` / `JIRA_PASSWORD`)입니다.
 
 ## 라이선스
 

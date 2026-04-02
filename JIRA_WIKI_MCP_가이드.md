@@ -1,16 +1,16 @@
 # Jira·Wiki MCP 사용 가이드
 
-이 프로젝트의 `mcp_jira_server.py`는 **MCP(Model Context Protocol)** 로 **지라** 검색·이슈 조회·첨부 다운로드와 **위키(Confluence)** 검색을 **에디터 안의 AI**가 도구처럼 호출할 수 있게 해 줍니다.
+이 프로젝트의 `mcp_jira_server.py`는 **MCP(Model Context Protocol)** 로 **지라** 검색·이슈 조회·첨부 다운로드와 **위키(Confluence)** 검색을 **Cursor·VS Code·Claude Desktop** 등에서 AI가 도구처럼 호출할 수 있게 해 줍니다.
 
 ---
 
 ## MCP가 뭔가요?
 
 짧게 말하면, **AI와 외부 프로그램을 연결하는 표준 “콘센트”**입니다.  
-에디터(Cursor, VS Code 등)가 백그라운드에서 우리 Python 서버를 띄우고, AI가 `jira_search`·`wiki_search` 같은 **도구**를 호출하면 서버가 지라·위키 REST API에 요청하고 결과를 돌려줍니다.
+클라이언트(Cursor, VS Code, **Claude Desktop** 등)가 백그라운드에서 우리 Python 서버를 띄우고, AI가 `jira_search`·`wiki_search` 같은 **도구**를 호출하면 서버가 지라·위키 REST API에 요청하고 결과를 돌려줍니다.
 
 - 사용자가 매번 터미널에서 `python jira_search.py …`를 치지 않아도 됩니다.
-- 대신 **에디터에 MCP 서버를 한 번 등록**해 두어야 합니다.
+- 대신 **앱 설정에 MCP 서버를 한 번 등록**해 두어야 합니다.
 
 ---
 
@@ -18,12 +18,12 @@
 
 **보통은 따로 구동하지 않습니다.**
 
-1. Cursor / VS Code가 MCP 설정을 읽습니다.
-2. 채팅·에이전트가 지라 도구가 필요하다고 판단하면 **자동으로**  
+1. Cursor / VS Code / Claude Desktop 등이 MCP 설정을 읽습니다.
+2. 채팅이 지라·위키 도구가 필요하다고 판단하면 **자동으로**  
    `python mcp_jira_server.py` 같은 명령을 **자식 프로세스**로 실행합니다.
-3. 에디터와 서버는 **표준 입출력(stdio)** 으로만 대화합니다. (별도 포트·URL 없음)
+3. 클라이언트와 서버는 **표준 입출력(stdio)** 으로만 대화합니다. (별도 포트·URL 없음)
 
-즉, **MCP 서버는 “에디터가 필요할 때 켜는 백그라운드 프로그램”**에 가깝습니다.
+즉, **MCP 서버는 “앱이 필요할 때 켜는 백그라운드 프로그램”**에 가깝습니다.
 
 수동으로 테스트하고 싶다면(선택):
 
@@ -73,6 +73,40 @@ cd /프로젝트/jira-wiki
 - “위키에서 ○○ 키워드로 페이지 검색해 줘”
 
 에이전트가 **`jira_search` / `jira_get_issue` / `jira_download_attachments`** 또는 **`wiki_search`** 등 필요한 도구를 호출합니다.
+
+---
+
+## Claude Desktop에서 등록하기
+
+**예, 사용할 수 있습니다.** Claude Desktop도 MCP를 지원하며, 이 프로젝트 서버는 **stdio** 방식이라 Cursor와 같은 형태로 넣으면 됩니다.
+
+1. Claude Desktop을 연 뒤 **설정(Settings)** 을 엽니다. 앱 버전에 따라 **Developer**, **Desktop app** 하위의 개발자 설정, 또는 **Extensions / Connectors** 안내가 보일 수 있습니다.
+2. **`claude_desktop_config.json`** 을 편집합니다. 메뉴 이름은 **Edit Config** 등으로 표시되는 경우가 많고, 채팅 입력란의 **Connectors** 에서 연결된 MCP·도구 목록을 확인할 수도 있습니다.
+3. 최상위에 `mcpServers` 객체가 없으면 만들고, 아래처럼 **절대 경로**를 본인 환경에 맞게 넣습니다.
+
+```json
+{
+  "mcpServers": {
+    "jira-wiki": {
+      "command": "/본인경로/jira-wiki/.venv/bin/python",
+      "args": ["/본인경로/jira-wiki/mcp_jira_server.py"],
+      "env": {
+        "JIRA_BASE_URL": "http://jira.example.com:8080",
+        "JIRA_USER": "본인아이디",
+        "JIRA_PASSWORD": "본인비밀번호",
+        "WIKI_BASE_URL": "http://wiki.example.com:8080"
+      }
+    }
+  }
+}
+```
+
+- **설정 파일 위치**(앱 버전에 따라 다를 수 있음): macOS는 보통 `~/Library/Application Support/Claude/claude_desktop_config.json`, Windows는 `%APPDATA%\Claude\claude_desktop_config.json` 근처입니다. 메뉴의 “Edit Config”가 가장 확실합니다.
+- VS Code의 `envFile`처럼 **JSON 밖의 `.env`를 자동으로 읽어 주지는 않는 경우가 많습니다.** 자격 증명은 위처럼 `env`에 두거나, `.env`를 읽어 환경 변수를 세팅한 뒤 Python을 실행하는 **래퍼 스크립트**를 `command`로 지정하는 방식을 쓸 수 있습니다.
+- JSON을 저장한 뒤 **Claude Desktop을 완전히 종료했다가 다시 실행**하면 MCP 목록에 반영되는 경우가 많습니다.
+- 위키를 쓰지 않거나 기본 `WIKI_BASE_URL`을 쓰면 Cursor 절과 같이 **`WIKI_BASE_URL` 키는 생략**해도 됩니다.
+
+공식·최신 절차는 [Claude Desktop용 MCP 연결 안내](https://support.anthropic.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-for-desktop)를 함께 확인하세요.
 
 ---
 
@@ -153,8 +187,8 @@ MCP 서버는 **프로세스가 시작될 때** 환경 변수(또는 `.env`)로 
 
 | 질문 | 답 |
 | --- | --- |
-| VS Code / Cursor에 등록해서 쓸 수 있나요? | **예.** 설정에 서버를 추가하면 됩니다. |
-| 어떻게 구동하나요? | **에디터가 자동으로** Python 서버를 subprocess로 실행합니다. |
+| VS Code / Cursor / Claude Desktop에 등록해서 쓸 수 있나요? | **예.** 각 앱의 MCP 설정에 서버를 추가하면 됩니다. |
+| 어떻게 구동하나요? | **클라이언트 앱이 자동으로** Python 서버를 subprocess로 실행합니다. |
 | 매번 아이디/비밀번호를 입력하나요? | **아니요.** `.env` 또는 MCP `env` / `envFile`에 한 번 넣어 둡니다. |
 | 위키도 같은 서버에서 쓰나요? | **`wiki_search` 도구**로 검색합니다. 계정은 지라와 동일, 주소는 `WIKI_BASE_URL`(선택). |
 | 다른 사람은? | **각자 자기 계정**으로 같은 방식 설정. 비밀번호 공유·저장소 커밋은 피하세요. |
@@ -166,5 +200,5 @@ MCP 서버는 **프로세스가 시작될 때** 환경 변수(또는 `.env`)로 
 - **설정을 못 읽는다**: `JIRA_BASE_URL` 끝 슬래시 없이, `JIRA_USER` / `JIRA_PASSWORD` 오타 확인.
 - **위키 검색이 404·엔드포인트 없음**: `WIKI_BASE_URL`에 **컨텍스트 경로**(`/wiki` 등)를 포함해야 하는지 확인합니다. 에러 응답 본문과 `_wikiSearchMeta`의 `endpoint`를 보면 어떤 URL로 시도했는지 알 수 있습니다.
 - **위키만 쓰는데 도구가 자격 증명 없다고 한다**: `wiki_search`도 `JIRA_USER`, `JIRA_PASSWORD`를 읽습니다. 변수 이름이 지라와 같아 헷갈릴 수 있으나, 위키 로그인에도 동일 값을 넣으면 됩니다.
-- **도구가 안 보인다**: Cursor/VS Code에서 MCP 서버가 **Enabled** 인지, 해당 채널이 MCP 도구를 쓰는지 확인.
+- **도구가 안 보인다**: Cursor/VS Code에서 MCP 서버가 **Enabled** 인지, Claude Desktop은 **Developer** 설정·앱 재시작·해당 대화에서 도구 사용이 허용되는지 확인합니다.
 - **Python 버전**: 이 프로젝트 MCP 서버는 **Python 3.9+** 에서 동작하도록 작성되어 있습니다. 가상환경 경로가 맞는지 확인하세요.
