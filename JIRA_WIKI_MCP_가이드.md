@@ -7,7 +7,7 @@
 ## MCP가 뭔가요?
 
 짧게 말하면, **AI와 외부 프로그램을 연결하는 표준 “콘센트”**입니다.  
-클라이언트(Cursor, VS Code, **Claude Desktop** 등)가 백그라운드에서 우리 Python 서버를 띄우고, AI가 `jira_search`·`wiki_search` 같은 **도구**를 호출하면 서버가 지라·위키 REST API에 요청하고 결과를 돌려줍니다.
+클라이언트(Cursor, VS Code, **Claude Desktop** 등)가 백그라운드에서 우리 Python 서버를 띄우고, AI가 `jira_search`·`wiki_search`·`wiki_get_page` 같은 **도구**를 호출하면 서버가 지라·위키 REST API에 요청하고 결과를 돌려줍니다.
 
 - 사용자가 매번 터미널에서 `python jira_search.py …`를 치지 않아도 됩니다.
 - 대신 **앱 설정에 MCP 서버를 한 번 등록**해 두어야 합니다.
@@ -71,8 +71,10 @@ cd /프로젝트/jira-wiki
 - “내 담당 이슈 JQL로 검색해 줘”
 - “CSA10-44546 이슈 상세랑 댓글 요약해 줘”
 - “위키에서 ○○ 키워드로 페이지 검색해 줘”
+- “위키에서 **P1599** 찾아 줘” → **`wiki_search`(query=`P1599`)** (문서코드·검색어)
+- “그 페이지 본문 보여 줘” → 검색 JSON의 **숫자 id**로 **`wiki_get_page`**
 
-에이전트가 **`jira_search` / `jira_get_issue` / `jira_download_attachments`** 또는 **`wiki_search`** 등 필요한 도구를 호출합니다.
+에이전트가 **`jira_search` / `jira_get_issue` / `jira_download_attachments`**, **`wiki_search` / `wiki_get_page`** 등 필요한 도구를 호출합니다.
 
 ---
 
@@ -136,7 +138,7 @@ VS Code는 **MCP 공식 지원**이 있으며, 워크스페이스에 `.vscode/mc
 
 ---
 
-## 제공되는 도구 (5개)
+## 제공되는 도구 (6개)
 
 | 도구 이름 | 하는 일 |
 | --- | --- |
@@ -144,13 +146,19 @@ VS Code는 **MCP 공식 지원**이 있으며, 워크스페이스에 `.vscode/mc
 | `jira_search_users` | 사용자 id·이름 일부 검색(웹 자동완성과 유사) → JSON 배열 문자열 |
 | `jira_get_issue` | 이슈 키로 상세(본문·첨부 메타·이력·댓글) — `text` 또는 `json` |
 | `jira_download_attachments` | 첨부를 `dest_dir` 폴더에 저장 (Basic 인증) |
-| `wiki_search` | 위키(Confluence) **검색어**로 페이지·블로그 제목·본문 CQL 검색 → JSON 문자열 |
+| `wiki_search` | 위키 **검색어**로 페이지·블로그 CQL 검색 → **목록 JSON**(제목·id 등, 본문은 짧게만 포함될 수 있음) |
+| `wiki_get_page` | **숫자 content id**로 본문·스페이스·웹 URL 조회 — `text`(기본) 또는 `json`. `P1599` 같은 코드는 `wiki_search`로 검색 |
 
 지라 관련 도구는 CLI의 `jira_search.py`와 같은 **지라 URL·계정**을 사용합니다.
 
 ---
 
-## 위키(Confluence) 검색 (`wiki_search`)
+## 위키(Confluence): 검색 (`wiki_search`)과 본문 (`wiki_get_page`)
+
+- **`P1599`, `HELP-123` 같은 문자열**은 보통 **문서코드·검색어**입니다 → **`wiki_search`의 `query`**에 그대로 넣습니다. (Confluence 페이지 id가 아닙니다.)
+- 검색 API는 **전체 본문**을 잘 안 줍니다. 본문을 보려면 검색 결과에 나온 **숫자 id**(또는 URL의 `pageId=`)로 **`wiki_get_page`**를 호출합니다.
+
+### `wiki_search`
 
 - **계정**: 지라와 동일하게 `JIRA_USER`, `JIRA_PASSWORD`(Basic 인증)를 사용합니다. 위키 전용 별도 변수는 없습니다.
 - **주소**: `WIKI_BASE_URL` 환경 변수로 지정합니다. **비우거나 생략**하면 기본값 `http://wiki.example.com:8080` 이 사용됩니다.
@@ -159,9 +167,17 @@ VS Code는 **MCP 공식 지원**이 있으며, 워크스페이스에 `.vscode/mc
   - `max_results` (선택, 기본 20, 최대 100)
   - `start_at` (선택, 기본 0): 다음 페이지 조회 시 offset
 - **응답**: Confluence REST API JSON 문자열입니다. 실제로 호출에 성공한 엔드포인트와 사용한 CQL은 `_wikiSearchMeta` 필드에 붙습니다.
-- **동작 요약**: 서버 버전·설치 경로에 따라 `/rest/api/content/search` 또는 `/rest/api/search` 등 여러 URL을 순서대로 시도하고, 복잡한 CQL이 거절되면 단순 `text ~ "검색어"` 형태로 한 번 더 시도합니다.
+- **id 찾기**: JSON의 `results` 항목마다 구조가 다를 수 있습니다. **`id`**가 최상위에 있거나, **`content.id`** 안에 있습니다. 그 값을 `wiki_get_page`의 `content_id`에 넣습니다.
 
-**위키만** 쓰고 지라 URL이 없을 때는 `wiki_search`만 호출하면 되며, 이때도 **`JIRA_USER` / `JIRA_PASSWORD`는 필수**입니다. (`JIRA_BASE_URL` 없이도 위키 도구는 동작합니다.)
+### `wiki_get_page`
+
+- **인자**:
+  - `content_id` (필수): **숫자만** (예 `344872205`). `wiki_search` 결과의 `id` / `content.id`, 또는 웹 주소의 `pageId=`.
+  - `output_format` (선택): `text`(기본, 본문은 HTML 렌더에서 태그 제거) 또는 `json`(API 원본)
+- **주의**: `P1599`를 여기 넣지 마세요. 문서코드는 **`wiki_search`**로 찾은 뒤, 나온 **숫자 id**를 넣습니다.
+- **동작**: `GET /rest/api/content/{id}` 를 여러 설치 경로 후보로 시도하고, `expand` 조합을 줄여 가며 호출합니다.
+
+**위키만** 쓰고 지라 URL이 없을 때는 `wiki_search` / `wiki_get_page`만 쓰면 되며, 이때도 **`JIRA_USER` / `JIRA_PASSWORD`는 필수**입니다. (`JIRA_BASE_URL` 없이도 위키 도구는 동작합니다.)
 
 ---
 
@@ -190,7 +206,7 @@ MCP 서버는 **프로세스가 시작될 때** 환경 변수(또는 `.env`)로 
 | VS Code / Cursor / Claude Desktop에 등록해서 쓸 수 있나요? | **예.** 각 앱의 MCP 설정에 서버를 추가하면 됩니다. |
 | 어떻게 구동하나요? | **클라이언트 앱이 자동으로** Python 서버를 subprocess로 실행합니다. |
 | 매번 아이디/비밀번호를 입력하나요? | **아니요.** `.env` 또는 MCP `env` / `envFile`에 한 번 넣어 둡니다. |
-| 위키도 같은 서버에서 쓰나요? | **`wiki_search` 도구**로 검색합니다. 계정은 지라와 동일, 주소는 `WIKI_BASE_URL`(선택). |
+| 위키도 같은 서버에서 쓰나요? | **`wiki_search`**로 검색, **`wiki_get_page`**로 id별 본문 조회. 계정은 지라와 동일, 주소는 `WIKI_BASE_URL`(선택). |
 | 다른 사람은? | **각자 자기 계정**으로 같은 방식 설정. 비밀번호 공유·저장소 커밋은 피하세요. |
 
 ---
@@ -199,6 +215,7 @@ MCP 서버는 **프로세스가 시작될 때** 환경 변수(또는 `.env`)로 
 
 - **설정을 못 읽는다**: `JIRA_BASE_URL` 끝 슬래시 없이, `JIRA_USER` / `JIRA_PASSWORD` 오타 확인.
 - **위키 검색이 404·엔드포인트 없음**: `WIKI_BASE_URL`에 **컨텍스트 경로**(`/wiki` 등)를 포함해야 하는지 확인합니다. 에러 응답 본문과 `_wikiSearchMeta`의 `endpoint`를 보면 어떤 URL로 시도했는지 알 수 있습니다.
-- **위키만 쓰는데 도구가 자격 증명 없다고 한다**: `wiki_search`도 `JIRA_USER`, `JIRA_PASSWORD`를 읽습니다. 변수 이름이 지라와 같아 헷갈릴 수 있으나, 위키 로그인에도 동일 값을 넣으면 됩니다.
+- **위키만 쓰는데 도구가 자격 증명 없다고 한다**: `wiki_search` / `wiki_get_page` 모두 `JIRA_USER`, `JIRA_PASSWORD`를 읽습니다. 변수 이름이 지라와 같아 헷갈릴 수 있으나, 위키 로그인에도 동일 값을 넣으면 됩니다.
+- **검색만 했는데 본문이 안 보인다**: 정상입니다. `wiki_get_page`에 검색 결과의 **숫자 id**를 넣으세요. `P1599`는 검색어로만 쓰입니다.
 - **도구가 안 보인다**: Cursor/VS Code에서 MCP 서버가 **Enabled** 인지, Claude Desktop은 **Developer** 설정·앱 재시작·해당 대화에서 도구 사용이 허용되는지 확인합니다.
 - **Python 버전**: 이 프로젝트 MCP 서버는 **Python 3.9+** 에서 동작하도록 작성되어 있습니다. 가상환경 경로가 맞는지 확인하세요.

@@ -1,6 +1,6 @@
 # jira-wiki
 
-지라(Jira Server) REST API로 이슈 검색·상세·댓글·이력·첨부 다운로드를 CLI에서 처리하고, **MCP 서버**로 에디터 AI와 연결할 수 있는 작은 도구 모음입니다. MCP에서는 같은 서버 프로세스로 **위키(Confluence) 검색**(`wiki_search`)도 제공합니다.
+지라(Jira Server) REST API로 이슈 검색·상세·댓글·이력·첨부 다운로드를 CLI에서 처리하고, **MCP 서버**로 에디터 AI와 연결할 수 있는 작은 도구 모음입니다. MCP에서는 같은 서버 프로세스로 **위키(Confluence) 검색**(`wiki_search`)과 **페이지 본문 조회**(`wiki_get_page`)도 제공합니다.
 
 ## 빠른 시작
 
@@ -15,11 +15,14 @@ cp .env.example .env
 .venv/bin/python jira_search.py --issue PROJ-123
 .venv/bin/python jira_search.py --users "홍길" -n 15
 
-# 위키(Confluence) 검색 — JIRA_USER / JIRA_PASSWORD 동일, JSON 출력
+# 위키(Confluence) 검색 — 문서코드·키워드 그대로 (예: P1599)
+.venv/bin/python wiki_search.py "P1599" -n 10
 .venv/bin/python wiki_search.py "메신저" -n 10
+# 본문 조회 — 반드시 숫자 pageId (검색 JSON의 id). P1599는 검색어로만 사용
+.venv/bin/python wiki_search.py --page 344872205
 ```
 
-MCP·Cursor·VS Code·**Claude Desktop** 연결, 지라·위키 도구 목록·환경 변수 설명은 [JIRA_WIKI_MCP_가이드.md](./JIRA_WIKI_MCP_가이드.md)를 참고하세요. 위키는 터미널에서 **`wiki_search.py`** 로도 검색할 수 있고, MCP 도구 **`wiki_search`** 로도 호출할 수 있습니다. 계정은 지라와 동일(`JIRA_USER` / `JIRA_PASSWORD`)입니다.
+MCP·Cursor·VS Code·**Claude Desktop** 연결, 지라·위키 도구 목록·환경 변수 설명은 [JIRA_WIKI_MCP_가이드.md](./JIRA_WIKI_MCP_가이드.md)를 참고하세요. 위키는 터미널 **`wiki_search.py`** 또는 MCP **`wiki_search`** / **`wiki_get_page`** 로 쓸 수 있습니다. 계정은 지라와 동일(`JIRA_USER` / `JIRA_PASSWORD`)입니다.
 
 ## 라이선스
 

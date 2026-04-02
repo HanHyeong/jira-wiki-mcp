@@ -29,7 +29,7 @@ import wiki_search as ws
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "jira-wiki"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 
 def _bootstrap_env() -> None:
@@ -166,7 +166,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "wiki_search",
-        "description": "Confluence(위키) 전문 검색. 검색어로 페이지·블로그 제목·본문을 CQL로 조회하고 REST JSON을 반환.",
+        "description": "Confluence(위키) 전문 검색. query에 문서코드·키워드 그대로 (예: P1599). 목록·숫자 id만 JSON 반환. 본문은 wiki_get_page(숫자 id).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -188,33 +188,67 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "wiki_get_page",
+        "description": "Confluence 페이지 본문 조회. content_id는 숫자 id만 (wiki_search 결과). P1599 같은 문서코드는 wiki_search(query)로 검색.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content_id": {
+                    "type": "string",
+                    "description": "숫자 content id만 (예: 344872205). wiki_search 결과의 id 또는 content.id. P1599는 검색어이므로 wiki_search 사용",
+                },
+                "output_format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "default": "text",
+                    "description": "text=본문 요약, json=API 전체 JSON",
+                },
+            },
+            "required": ["content_id"],
+        },
+    },
 ]
 
 
 def _call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     arguments = arguments or {}
-    if name == "wiki_search":
+    if name in ("wiki_search", "wiki_get_page"):
         wcfg = ws.try_get_wiki_config()
         if wcfg is None:
             return _tool_text(
-                "위키 검색에 JIRA_USER, JIRA_PASSWORD 가 필요합니다. "
+                "위키 도구에 JIRA_USER, JIRA_PASSWORD 가 필요합니다. "
                 "선택적으로 WIKI_BASE_URL(기본: http://wiki.example.com:8080)을 .env 에 넣을 수 있습니다.",
                 is_error=True,
             )
         wiki_base, user, password = wcfg
         try:
-            q = str(arguments.get("query") or "").strip()
-            if not q:
-                return _tool_text("query 가 필요합니다.", is_error=True)
-            data = ws.search_wiki(
-                wiki_base,
-                user,
-                password,
-                q,
-                int(arguments.get("max_results") or 20),
-                int(arguments.get("start_at") or 0),
-            )
-            return _tool_text(json.dumps(data, ensure_ascii=False, indent=2))
+            if name == "wiki_search":
+                q = str(arguments.get("query") or "").strip()
+                if not q:
+                    return _tool_text("query 가 필요합니다.", is_error=True)
+                data = ws.search_wiki(
+                    wiki_base,
+                    user,
+                    password,
+                    q,
+                    int(arguments.get("max_results") or 20),
+                    int(arguments.get("start_at") or 0),
+                )
+                return _tool_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+            page_ref = str(arguments.get("content_id") or "").strip()
+            if not page_ref:
+                return _tool_text(
+                    "content_id 에는 숫자 id만 넣으세요 (wiki_search 결과). "
+                    "P1599 같은 문서코드는 wiki_search 의 query 로 검색하세요.",
+                    is_error=True,
+                )
+            data = ws.get_wiki_page(wiki_base, user, password, page_ref)
+            fmt = (arguments.get("output_format") or "text").lower()
+            if fmt == "json":
+                return _tool_text(json.dumps(data, ensure_ascii=False, indent=2))
+            return _tool_text(ws.format_wiki_page_detail(data, wiki_base))
         except ValueError as e:
             return _tool_text(str(e), is_error=True)
         except requests.HTTPError as e:
