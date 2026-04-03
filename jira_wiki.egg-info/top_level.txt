@@ -1,0 +1,4 @@
+jira_search
+mcp_jira_server
+project_version
+wiki_search

@@ -1,0 +1,24 @@
+---
+description: 코드·설정 변경 시 project_version.py와 CHANGELOG.md를 함께 갱신
+alwaysApply: true
+---
+
+# 버전·변경 이력 (필수)
+
+이 저장소에서 **기능·동작·공개 API에 영향을 주는 수정**을 마칠 때는 같은 작업 안에서 아래를 수행한다.
+
+1. **`project_version.py`의 `__version__`**
+   - 기본은 **패치** 증가 (예: `1.2.0` → `1.2.1`).
+   - 사용자가 major/minor 릴리스를 요청한 경우에만 그에 맞게 올린다.
+
+2. **`CHANGELOG.md`**
+   - 새 버전이면 `## [x.y.z] — YYYY-MM-DD` 섹션을 추가하고, `[Unreleased]`는 비우거나 남긴다.
+   - 변경 요약을 bullet로 적는다 (도구 추가, 버그 수정, 의존성 변경 등).
+
+3. **버전을 올리지 않아도 되는 경우**
+   - 순수 오타·문장만 고치는 Markdown, 코드 의미 없는 공백만, 규칙/가이드의 표현만 살짝 다듬은 수준.
+
+4. **반드시 패치 이상 올릴 것**
+   - `*.py` 로직 변경, MCP 도구 추가/스키마 변경, `requirements.txt` / `pyproject.toml` 의존성 변경, CLI 동작 변경.
+
+에이전트는 작업 완료 전에 `__version__`과 `CHANGELOG` 반영 여부를 스스로 확인한다.

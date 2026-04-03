@@ -1,0 +1,12 @@
+LICENSE
+README.md
+jira_search.py
+mcp_jira_server.py
+project_version.py
+pyproject.toml
+wiki_search.py
+jira_wiki.egg-info/PKG-INFO
+jira_wiki.egg-info/SOURCES.txt
+jira_wiki.egg-info/dependency_links.txt
+jira_wiki.egg-info/requires.txt
+jira_wiki.egg-info/top_level.txt

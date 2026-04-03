@@ -138,18 +138,25 @@ VS Code는 **MCP 공식 지원**이 있으며, 워크스페이스에 `.vscode/mc
 
 ---
 
-## 제공되는 도구 (6개)
+## 제공되는 도구 (7개)
 
 | 도구 이름 | 하는 일 |
 | --- | --- |
 | `jira_search` | JQL 검색 → JSON 문자열로 결과 |
 | `jira_search_users` | 사용자 id·이름 일부 검색(웹 자동완성과 유사) → JSON 배열 문자열 |
 | `jira_get_issue` | 이슈 키로 상세(본문·첨부 메타·이력·댓글) — `text` 또는 `json` |
-| `jira_download_attachments` | 첨부를 `dest_dir` 폴더에 저장 (Basic 인증) |
+| `jira_download_attachments` | 첨부를 **`dest_dir` 실제 디스크 경로**에 저장 (`~` 확장·절대 경로). 저장 후 존재·크기 검증 문자열 포함 |
+| `jira_fetch_attachments` | 첨부를 **디스크 없이** JSON으로 반환(`content_base64`). Claude Desktop에서 “저장됐는데 안 보임”일 때 소용량 이미지·파일 확인용 |
 | `wiki_search` | 위키 **검색어**로 페이지·블로그 CQL 검색 → **목록 JSON**(제목·id 등, 본문은 짧게만 포함될 수 있음) |
 | `wiki_get_page` | **숫자 content id**로 본문·스페이스·웹 URL 조회 — `text`(기본) 또는 `json`. `P1599` 같은 코드는 `wiki_search`로 검색 |
 
 지라 관련 도구는 CLI의 `jira_search.py`와 같은 **지라 URL·계정**을 사용합니다.
+
+### Claude Desktop / 첨부파일
+
+- **`jira_download_attachments`**는 MCP 서버(로컬 Python)가 **지정한 폴더에 실제로 씁니다.** 다만 AI가 `dest_dir`로 `/tmp/...`, 가상 작업 디렉터리만 넣으면 **본인 Mac의 Finder·다운로드와 다른 위치**가 되어 “완료인데 파일이 없다”처럼 느껴질 수 있습니다.
+- **권장**: `dest_dir`를 **`/Users/본인계정/Downloads/jira_CSA10-36630`** 처럼 **본인 사용자 홈 아래 실제 경로**로 요청하세요. 응답에 적힌 절대 경로로 폴더를 직접 열어 확인합니다.
+- **채팅 안에서 내용 보기**: **`jira_fetch_attachments`** — 첨부를 base64로 돌려줍니다(기본 파일당 2MB·전체 8MB 한도, 초과 분은 `skipped`). 이미지는 모델이 설명·표시하기 쉬워집니다.
 
 ---
 
@@ -208,6 +215,7 @@ MCP 서버는 **프로세스가 시작될 때** 환경 변수(또는 `.env`)로 
 | 매번 아이디/비밀번호를 입력하나요? | **아니요.** `.env` 또는 MCP `env` / `envFile`에 한 번 넣어 둡니다. |
 | 위키도 같은 서버에서 쓰나요? | **`wiki_search`**로 검색, **`wiki_get_page`**로 id별 본문 조회. 계정은 지라와 동일, 주소는 `WIKI_BASE_URL`(선택). |
 | 다른 사람은? | **각자 자기 계정**으로 같은 방식 설정. 비밀번호 공유·저장소 커밋은 피하세요. |
+| MCP·CLI 버전은 어디에? | **`project_version.py`** 의 `__version__` 이 단일 기준입니다. `jira_search.py --version` / `wiki_search.py --version`, MCP `serverInfo.version` 과 동일합니다. |
 
 ---
 
@@ -218,4 +226,5 @@ MCP 서버는 **프로세스가 시작될 때** 환경 변수(또는 `.env`)로 
 - **위키만 쓰는데 도구가 자격 증명 없다고 한다**: `wiki_search` / `wiki_get_page` 모두 `JIRA_USER`, `JIRA_PASSWORD`를 읽습니다. 변수 이름이 지라와 같아 헷갈릴 수 있으나, 위키 로그인에도 동일 값을 넣으면 됩니다.
 - **검색만 했는데 본문이 안 보인다**: 정상입니다. `wiki_get_page`에 검색 결과의 **숫자 id**를 넣으세요. `P1599`는 검색어로만 쓰입니다.
 - **도구가 안 보인다**: Cursor/VS Code에서 MCP 서버가 **Enabled** 인지, Claude Desktop은 **Developer** 설정·앱 재시작·해당 대화에서 도구 사용이 허용되는지 확인합니다.
+- **Claude Desktop·지라 첨부 “다운로드 완료인데 파일 없음”**: 위 **「Claude Desktop / 첨부파일」** 절 참고. 실제 경로 지정 또는 `jira_fetch_attachments` 사용.
 - **Python 버전**: 이 프로젝트 MCP 서버는 **Python 3.9+** 에서 동작하도록 작성되어 있습니다. 가상환경 경로가 맞는지 확인하세요.
