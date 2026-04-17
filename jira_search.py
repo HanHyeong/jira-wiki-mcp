@@ -233,6 +233,217 @@ def get_issue(
     return r.json()
 
 
+def get_issue_transitions(
+    base_url: str,
+    user: str,
+    password: str,
+    issue_key: str,
+) -> dict[str, Any]:
+    """GET /issue/{key}/transitions — 허용 전이 목록."""
+    key_q = quote((issue_key or "").strip(), safe="")
+    if not key_q:
+        raise ValueError("issue_key 가 비어 있습니다.")
+    b = base_url.rstrip("/")
+    url = f"{b}/rest/api/2/issue/{key_q}/transitions"
+    r = requests.get(
+        url,
+        auth=(user, password),
+        headers={"Accept": "application/json"},
+        timeout=60,
+    )
+    if r.status_code == 404:
+        url3 = f"{b}/rest/api/3/issue/{key_q}/transitions"
+        r = requests.get(
+            url3,
+            auth=(user, password),
+            headers={"Accept": "application/json"},
+            timeout=60,
+        )
+    r.raise_for_status()
+    return r.json()
+
+
+def get_issue_status_summary(
+    base_url: str,
+    user: str,
+    password: str,
+    issue_key: str,
+) -> tuple[str, str]:
+    """이슈 키와 현재 상태 이름만 조회 (전이 안내용 경량 호출)."""
+    key_q = quote((issue_key or "").strip(), safe="")
+    if not key_q:
+        raise ValueError("issue_key 가 비어 있습니다.")
+    b = base_url.rstrip("/")
+    url = f"{b}/rest/api/2/issue/{key_q}?fields=status"
+    r = requests.get(
+        url,
+        auth=(user, password),
+        headers={"Accept": "application/json"},
+        timeout=60,
+    )
+    if r.status_code == 404:
+        url3 = f"{b}/rest/api/3/issue/{key_q}?fields=status"
+        r = requests.get(
+            url3,
+            auth=(user, password),
+            headers={"Accept": "application/json"},
+            timeout=60,
+        )
+    r.raise_for_status()
+    data = r.json()
+    key_out = str(data.get("key") or (issue_key or "").strip())
+    f = data.get("fields") or {}
+    st = f.get("status") if isinstance(f.get("status"), dict) else {}
+    status_name = str(st.get("name") or "").strip()
+    return key_out, status_name
+
+
+def do_issue_transition(
+    base_url: str,
+    user: str,
+    password: str,
+    issue_key: str,
+    transition_id: str,
+    fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """POST /issue/{key}/transitions — 한 단계 상태 전이."""
+    key = (issue_key or "").strip()
+    if not key:
+        raise ValueError("issue_key 가 비어 있습니다.")
+    tid = str(transition_id or "").strip()
+    if not tid:
+        raise ValueError("transition_id 가 비어 있습니다.")
+    key_q = quote(key, safe="")
+    body: dict[str, Any] = {"transition": {"id": tid}}
+    if fields:
+        body["fields"] = fields
+    b = base_url.rstrip("/")
+    url = f"{b}/rest/api/2/issue/{key_q}/transitions"
+    r = requests.post(
+        url,
+        json=body,
+        auth=(user, password),
+        headers={"Content-Type": "application/json"},
+        timeout=60,
+    )
+    if r.status_code == 404:
+        url3 = f"{b}/rest/api/3/issue/{key_q}/transitions"
+        r = requests.post(
+            url3,
+            json=body,
+            auth=(user, password),
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+    r.raise_for_status()
+    if not r.content or not r.content.strip():
+        return {}
+    try:
+        return r.json()
+    except ValueError:
+        return {}
+
+
+def set_issue_assignee(
+    base_url: str,
+    user: str,
+    password: str,
+    issue_key: str,
+    assignee_login: str | None = None,
+    assignee_account_id: str | None = None,
+) -> dict[str, Any]:
+    """PUT /issue/{key} — 담당자(assignee)만 변경하거나 해제.
+
+    - Server/Data Center: ``assignee_login`` 에 Jira **로그인 name** (``jira_search_users`` 결과의 name).
+    - Jira Cloud: ``assignee_account_id`` 만 사용 (REST v3 ``accountId``).
+    - 담당 해제: ``assignee_login``·``assignee_account_id`` 모두 비우거나
+      ``assignee_login`` 을 ``(없음)``, ``-``, ``none`` 등으로 둔다.
+    """
+    key = (issue_key or "").strip()
+    if not key:
+        raise ValueError("issue_key 가 비어 있습니다.")
+    aid = (assignee_account_id or "").strip()
+    login = (assignee_login or "").strip()
+    if aid and login:
+        raise ValueError("assignee_login 과 assignee_account_id 는 하나만 지정하세요.")
+
+    key_q = quote(key, safe="")
+    b = base_url.rstrip("/")
+
+    if aid:
+        body: dict[str, Any] = {"fields": {"assignee": {"accountId": aid}}}
+        urls = [f"{b}/rest/api/3/issue/{key_q}", f"{b}/rest/api/2/issue/{key_q}"]
+    elif not login or login.lower() in ("null", "(없음)", "-", "none", "clear"):
+        body = {"fields": {"assignee": None}}
+        urls = [f"{b}/rest/api/2/issue/{key_q}", f"{b}/rest/api/3/issue/{key_q}"]
+    else:
+        body = {"fields": {"assignee": {"name": login}}}
+        urls = [f"{b}/rest/api/2/issue/{key_q}", f"{b}/rest/api/3/issue/{key_q}"]
+
+    last_exc: requests.HTTPError | None = None
+    last_resp: requests.Response | None = None
+    for url in urls:
+        r = requests.put(
+            url,
+            json=body,
+            auth=(user, password),
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+        last_resp = r
+        if r.status_code == 404:
+            continue
+        try:
+            r.raise_for_status()
+        except requests.HTTPError as e:
+            last_exc = e
+            continue
+        if not r.content or not r.content.strip():
+            return {}
+        try:
+            return r.json()
+        except ValueError:
+            return {}
+    if last_exc:
+        raise last_exc
+    if last_resp is not None:
+        last_resp.raise_for_status()
+    raise RuntimeError("담당자 변경: 응답 없음")
+
+
+def format_transitions_block(
+    issue_key: str,
+    current_status: str,
+    transitions_payload: dict[str, Any],
+) -> str:
+    tlist = transitions_payload.get("transitions") or []
+    lines = [
+        f"이슈: {issue_key}",
+        f"현재 상태: {current_status or '(알 수 없음)'}",
+        "",
+        "다음에 수행 가능한 전이(워크플로 작업):",
+    ]
+    if not isinstance(tlist, list) or not tlist:
+        lines.append("(없음 — 종료·권한·조건 등으로 전이가 없을 수 있음)")
+        return "\n".join(lines)
+    for t in tlist:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id", "")
+        tname = t.get("name") or ""
+        to = t.get("to") if isinstance(t.get("to"), dict) else {}
+        to_name = (to or {}).get("name") or ""
+        lines.append(f"  · transition_id={tid}\t「{tname}」 → 상태「{to_name}」")
+    lines.append("")
+    lines.append(
+        "사용자가 목표 상태(예: 접수)를 말했을 때: 위 목록에서 "
+        "전이 이름 또는 이동 후 상태(to)가 일치하는 transition_id 하나를 고른 뒤 "
+        "jira_transition_issue 로 실행한다. "
+        "일치하는 것이 없거나 여러 개면 이 목록을 사용자에게 보여 주고 선택하게 한다."
+    )
+    return "\n".join(lines)
+
+
 def _fetch_comment_page_v2(
     base_url: str,
     user: str,
@@ -308,6 +519,67 @@ def get_issue_comments(
     except Exception:
         pass
     return collected[:max_total]
+
+
+def _adf_paragraph_document(text: str) -> dict[str, Any]:
+    """Jira REST API 3.x 댓글용 최소 ADF 문서."""
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": text}],
+            }
+        ],
+    }
+
+
+def add_issue_comment(
+    base_url: str,
+    user: str,
+    password: str,
+    issue_key: str,
+    body_text: str,
+) -> dict[str, Any]:
+    """
+    이슈에 댓글 등록. Server는 보통 REST v2 문자열 body, 일부 환경은 v3 ADF만 허용.
+    """
+    key = (issue_key or "").strip()
+    text = (body_text or "").strip()
+    if not key:
+        raise ValueError("issue_key 가 비어 있습니다.")
+    if not text:
+        raise ValueError("댓글 본문이 비어 있습니다.")
+
+    key_q = quote(key, safe="")
+    auth = (user, password)
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    url2 = f"{base_url.rstrip('/')}/rest/api/2/issue/{key_q}/comment"
+
+    r2 = requests.post(
+        url2,
+        json={"body": text},
+        auth=auth,
+        headers=headers,
+        timeout=60,
+    )
+    if r2.status_code in (200, 201):
+        return r2.json()
+
+    if r2.status_code not in (400, 404, 415):
+        r2.raise_for_status()
+
+    url3 = f"{base_url.rstrip('/')}/rest/api/3/issue/{key_q}/comment"
+    r3 = requests.post(
+        url3,
+        json={"body": _adf_paragraph_document(text)},
+        auth=auth,
+        headers=headers,
+        timeout=60,
+    )
+    r3.raise_for_status()
+    return r3.json()
 
 
 def _adf_to_plain(node: Any) -> str:
@@ -703,6 +975,18 @@ def main() -> None:
         metavar="DIR",
         help="--issue 와 함께 사용: 첨부파일을 해당 폴더에 다운로드",
     )
+    parser.add_argument(
+        "--post-comment-on",
+        metavar="KEY",
+        dest="post_comment_issue",
+        help="이슈에 댓글 등록 — 반드시 --comment-body 와 함께",
+    )
+    parser.add_argument(
+        "--comment-body",
+        metavar="TEXT",
+        dest="comment_body",
+        help="등록할 댓글 본문",
+    )
     args = parser.parse_args()
 
     if args.save_attachments and not args.issue:
@@ -711,8 +995,54 @@ def main() -> None:
     if args.users and args.issue:
         print("--users 와 --issue 는 함께 쓸 수 없습니다.", file=sys.stderr)
         sys.exit(2)
+    if args.post_comment_issue or args.comment_body:
+        if not args.post_comment_issue or not args.comment_body:
+            print(
+                "--post-comment-on 과 --comment-body 는 둘 다 지정해야 합니다.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if args.issue or args.users:
+            print(
+                "--post-comment-on 은 --issue / --users 와 함께 쓸 수 없습니다.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     base, user, password = get_config()
+
+    if args.post_comment_issue:
+        key = str(args.post_comment_issue).strip()
+        body = str(args.comment_body or "").strip()
+        if not body:
+            print("댓글 본문이 비어 있습니다.", file=sys.stderr)
+            sys.exit(2)
+        try:
+            out = add_issue_comment(base, user, password, key, body)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(2)
+        except requests.HTTPError as e:
+            err_body = ""
+            if e.response is not None:
+                try:
+                    err_body = e.response.text[:2000]
+                except Exception:
+                    err_body = str(e.response)
+            print(f"HTTP 오류: {e}\n{err_body}", file=sys.stderr)
+            sys.exit(1)
+        except requests.RequestException as e:
+            print(f"요청 실패: {e}", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        else:
+            aid = out.get("id", "?")
+            au = out.get("author") if isinstance(out.get("author"), dict) else {}
+            aname = (au.get("displayName") or au.get("name") or "").strip()
+            when = out.get("created") or ""
+            print(f"댓글 등록됨 id={aid} 작성자={aname or '(알 수 없음)'} 시각={when}")
+        return
     field_list = [f.strip() for f in args.fields.split(",") if f.strip()]
 
     if args.users is not None:

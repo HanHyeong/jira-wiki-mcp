@@ -150,6 +150,90 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "jira_list_transitions",
+        "description": (
+            "이슈의 현재 상태와 Jira가 허용하는 워크플로 전이 목록을 반환한다. "
+            "사용자가 특정 상태로 바꾸길 원하면 목록에서 전이 이름·이동 후 상태(to)가 맞는 "
+            "transition_id 를 골라 jira_transition_issue 로 실행한다. "
+            "목표에 맞는 전이가 없거나 복수 후보면 이 목록을 사용자에게 보여 주고 선택하게 한다."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string", "description": "예: CSA10-45980"},
+                "output_format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "default": "text",
+                    "description": "text=현재 상태+전이 표, json=Jira transitions API 원본",
+                },
+            },
+            "required": ["issue_key"],
+        },
+    },
+    {
+        "name": "jira_transition_issue",
+        "description": (
+            "jira_list_transitions 에서 확인한 transition_id 로 이슈를 한 단계 전이한다. "
+            "여러 단계가 필요하면 전이 후 다시 jira_list_transitions 로 목록을 갱신한다. "
+            "필수 필드 오류 시 Jira 응답 메시지를 보고 fields JSON 으로 재시도할 수 있다."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string"},
+                "transition_id": {
+                    "type": "string",
+                    "description": "전이 id (문자열, 예: 341)",
+                },
+                "fields_json": {
+                    "type": "string",
+                    "description": "선택. 전이 시 필수 필드가 있을 때 REST fields 객체 JSON 문자열",
+                },
+            },
+            "required": ["issue_key", "transition_id"],
+        },
+    },
+    {
+        "name": "jira_set_assignee",
+        "description": (
+            "이슈 담당자(assignee) 변경 또는 해제. "
+            "Server/Data Center 는 assignee 에 Jira 로그인 name( jira_search_users 의 name 필드). "
+            "Jira Cloud 는 assignee_account_id 만 사용. "
+            "담당 해제는 assignee·assignee_account_id 를 모두 비우거나 assignee 를 (없음) 등으로 둔다."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string", "description": "예: CSA10-45980"},
+                "assignee": {
+                    "type": "string",
+                    "description": "담당자 로그인 name. 비우면 담당 해제(Server/DC)",
+                },
+                "assignee_account_id": {
+                    "type": "string",
+                    "description": "Jira Cloud 전용 Atlassian accountId",
+                },
+            },
+            "required": ["issue_key"],
+        },
+    },
+    {
+        "name": "jira_add_comment",
+        "description": "지라 이슈에 댓글 등록. REST v2(문자열 본문) 우선, 실패 시 v3(ADF)로 재시도. 성공 시 생성된 댓글 JSON.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string", "description": "예: CSA10-36630"},
+                "body": {
+                    "type": "string",
+                    "description": "댓글 본문(플레인 텍스트)",
+                },
+            },
+            "required": ["issue_key", "body"],
+        },
+    },
+    {
         "name": "jira_download_attachments",
         "description": "이슈 첨부를 dest_dir에 저장. dest_dir는 반드시 실제 Mac/Windows 사용자 경로(예: /Users/이름/Downloads/jira_files). Claude가 /tmp 등만 쓰면 앱에서 파일이 안 보일 수 있음.",
         "inputSchema": {
@@ -343,6 +427,102 @@ def _call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
                     )
                 )
             return _tool_text(js.format_issue_detail(issue, comments))
+
+        if name == "jira_list_transitions":
+            key = str(arguments.get("issue_key") or "").strip()
+            if not key:
+                return _tool_text("issue_key 가 필요합니다.", is_error=True)
+            key_res, st_name = js.get_issue_status_summary(base, user, password, key)
+            data = js.get_issue_transitions(base, user, password, key)
+            fmt = (arguments.get("output_format") or "text").lower()
+            if fmt == "json":
+                merged = {
+                    "issueKey": key_res,
+                    "currentStatusName": st_name,
+                    "transitions": data.get("transitions"),
+                }
+                return _tool_text(
+                    json.dumps(merged, ensure_ascii=False, indent=2),
+                )
+            return _tool_text(
+                js.format_transitions_block(key_res, st_name, data),
+            )
+
+        if name == "jira_transition_issue":
+            key = str(arguments.get("issue_key") or "").strip()
+            tid = str(arguments.get("transition_id") or "").strip()
+            if not key:
+                return _tool_text("issue_key 가 필요합니다.", is_error=True)
+            if not tid:
+                return _tool_text("transition_id 가 필요합니다.", is_error=True)
+            fields_obj: dict[str, Any] | None = None
+            fj = arguments.get("fields_json")
+            if fj is not None and str(fj).strip():
+                try:
+                    parsed = json.loads(str(fj))
+                except json.JSONDecodeError as e:
+                    return _tool_text(
+                        f"fields_json JSON 파싱 실패: {e}",
+                        is_error=True,
+                    )
+                if not isinstance(parsed, dict):
+                    return _tool_text(
+                        "fields_json 은 JSON 객체여야 합니다.",
+                        is_error=True,
+                    )
+                fields_obj = parsed
+            out = js.do_issue_transition(
+                base, user, password, key, tid, fields_obj
+            )
+            lines = [
+                f"전이 요청 완료: {key} → transition_id={tid}",
+                "이슈 상태 확인: jira_get_issue 또는 jira_list_transitions",
+            ]
+            if out:
+                lines.append(json.dumps(out, ensure_ascii=False, indent=2))
+            return _tool_text("\n".join(lines))
+
+        if name == "jira_set_assignee":
+            key = str(arguments.get("issue_key") or "").strip()
+            if not key:
+                return _tool_text("issue_key 가 필요합니다.", is_error=True)
+            raw_login = arguments.get("assignee")
+            raw_aid = arguments.get("assignee_account_id")
+            login_s = (str(raw_login).strip() if raw_login is not None else "")
+            aid_s = (str(raw_aid).strip() if raw_aid is not None else "")
+            if aid_s and login_s:
+                return _tool_text(
+                    "assignee 와 assignee_account_id 를 동시에 지정할 수 없습니다.",
+                    is_error=True,
+                )
+            try:
+                out = js.set_issue_assignee(
+                    base,
+                    user,
+                    password,
+                    key,
+                    assignee_login=login_s if login_s else None,
+                    assignee_account_id=aid_s if aid_s else None,
+                )
+            except ValueError as e:
+                return _tool_text(str(e), is_error=True)
+            lines = [
+                f"담당자 변경 요청 완료: {key}",
+                "확인: jira_get_issue",
+            ]
+            if out:
+                lines.append(json.dumps(out, ensure_ascii=False, indent=2))
+            return _tool_text("\n".join(lines))
+
+        if name == "jira_add_comment":
+            key = str(arguments.get("issue_key") or "").strip()
+            body = str(arguments.get("body") or "").strip()
+            if not key:
+                return _tool_text("issue_key 가 필요합니다.", is_error=True)
+            if not body:
+                return _tool_text("body 가 필요합니다.", is_error=True)
+            data = js.add_issue_comment(base, user, password, key, body)
+            return _tool_text(json.dumps(data, ensure_ascii=False, indent=2))
 
         if name == "jira_download_attachments":
             key = str(arguments.get("issue_key") or "").strip()

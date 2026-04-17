@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [1.2.4] — 2026-04-17
+
+- 지라: 담당자 변경·해제 `jira_set_assignee`(MCP), `jira_search.set_issue_assignee`
+
+## [1.2.3] — 2026-04-17
+
+- 지라: 워크플로 전이 조회 `jira_list_transitions`, 전이 실행 `jira_transition_issue`(MCP), `jira_search` 헬퍼 함수
+
+## [1.2.2] — 2026-04-03
+
+- 지라: 이슈 댓글 등록 `jira_add_comment`(MCP), CLI `--post-comment-on` / `--comment-body`
+
 ## [1.2.1] — 2026-04-03
 
 - Cursor 프로젝트 규칙: 기능·동작 변경 시 `project_version.py` 패치 버전과 `CHANGELOG.md` 자동 갱신 (`.cursor/rules/version-changelog.mdc`)

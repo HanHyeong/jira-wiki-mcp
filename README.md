@@ -16,6 +16,8 @@ cp .env.example .env
 .venv/bin/python jira_search.py 'assignee = currentUser() ORDER BY updated DESC' -n 10
 .venv/bin/python jira_search.py --issue PROJ-123
 .venv/bin/python jira_search.py --users "홍길" -n 15
+# 이슈 댓글 등록
+.venv/bin/python jira_search.py --post-comment-on CSA10-36630 --comment-body "댓글 내용"
 
 # 위키(Confluence) 검색 — 문서코드·키워드 그대로 (예: P1599)
 .venv/bin/python wiki_search.py "P1599" -n 10
@@ -24,7 +26,7 @@ cp .env.example .env
 .venv/bin/python wiki_search.py --page 344872205
 ```
 
-MCP·Cursor·VS Code·**Claude Desktop** 연결, 지라·위키 도구 목록·환경 변수 설명은 [JIRA_WIKI_MCP_가이드.md](./JIRA_WIKI_MCP_가이드.md)를 참고하세요. 위키는 터미널 **`wiki_search.py`** 또는 MCP **`wiki_search`** / **`wiki_get_page`** 로 쓸 수 있습니다. 계정은 지라와 동일(`JIRA_USER` / `JIRA_PASSWORD`)입니다.
+MCP·Cursor·VS Code·**Claude Desktop** 연결, 지라·위키 도구 목록·환경 변수 설명은 [JIRA_WIKI_MCP_가이드.md](./JIRA_WIKI_MCP_가이드.md)를 참고하세요. 지라 댓글은 MCP **`jira_add_comment`** 또는 위 CLI로 등록합니다. 상태 전이는 MCP **`jira_list_transitions`** / **`jira_transition_issue`**, 담당자는 **`jira_set_assignee`**(계정 확인은 **`jira_search_users`**)를 사용합니다. 위키는 터미널 **`wiki_search.py`** 또는 MCP **`wiki_search`** / **`wiki_get_page`** 로 쓸 수 있습니다. 계정은 지라와 동일(`JIRA_USER` / `JIRA_PASSWORD`)입니다.
 
 ## 라이선스
 

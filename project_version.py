@@ -9,4 +9,4 @@
 MCP serverInfo.version · CLI --version 이 모두 이 값을 쓴다.
 """
 
-__version__ = "1.2.1"
+__version__ = "1.2.4"
