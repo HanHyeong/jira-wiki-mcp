@@ -12,7 +12,7 @@
 
 - 지라: 워크플로 전이 조회 `jira_list_transitions`, 전이 실행 `jira_transition_issue`(MCP), `jira_search` 헬퍼 함수
 
-## [1.2.2] — 2026-04-03
+## [1.2.2] — 2026-04-17
 
 - 지라: 이슈 댓글 등록 `jira_add_comment`(MCP), CLI `--post-comment-on` / `--comment-body`
 
